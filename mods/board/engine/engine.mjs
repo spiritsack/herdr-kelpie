@@ -666,6 +666,33 @@ async function baseRef(top) {
   return head;
 }
 const branchOf = async (folder) => (await git(folder, ["rev-parse", "--abbrev-ref", "HEAD"])).out || null;
+const taskBranch = (t) => `board/${slugOf(t.title) || "task"}-${t.id.slice(-5)}`;
+// A task with exactly one dependency builds on that task's work: it branches
+// from the dependency's branch, not from the default branch (else its PR
+// carries the dependency's commits and newer default-branch ones twice).
+// The branch name: the one its worktree has, else the name the engine gives it.
+export function depBranchOf(t, all) {
+  const ids = t?.dependsOn ?? [];
+  if (ids.length !== 1) return null;
+  const d = all.find((x) => x.id === ids[0] && x.board === t.board);
+  return d ? (d.worktree?.branch ?? taskBranch(d)) : null;
+}
+// The ref a dependent task branches from: the dependency's pushed branch, or
+// its local one when that is ahead of (or without) the pushed one; null when
+// neither exists.
+export async function depRef(top, branch) {
+  const has = async (ref) => (await git(top, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`])).ok;
+  const remote = (await git(top, ["remote", "get-url", "origin"])).ok;
+  if (remote) await run("git", ["-C", top, "fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { timeout: 120000 });
+  const pushed = remote && await has(`refs/remotes/origin/${branch}`) ? `origin/${branch}` : null;
+  const local = await has(`refs/heads/${branch}`) ? branch : null;
+  if (pushed && local) {
+    const same = (await git(top, ["rev-parse", pushed])).out === (await git(top, ["rev-parse", local])).out;
+    const ahead = !same && (await git(top, ["merge-base", "--is-ancestor", pushed, local])).ok;
+    return ahead ? local : pushed;
+  }
+  return pushed ?? local;
+}
 
 // The task's worktree: the one it has, or a new one for a task's first run.
 // null: it works in the board's folder (setting off, not git, or it already ran there).
@@ -677,10 +704,13 @@ async function worktreeFor(t, folder) {
   if (!boardSet(t).worktrees || !folder || (t.runs ?? []).length) return null;
   const repo = await repoOf(folder);
   if (!repo) return null;
-  const branch = `board/${slugOf(t.title) || "task"}-${t.id.slice(-5)}`;
+  const branch = taskBranch(t);
   const wpath = `${WT_ROOT}/${repo.name}/${branch.replace(/\//g, "-")}`;
   const exists = (await git(repo.top, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).ok;
-  const base = exists ? branch : await baseRef(repo.top);
+  const dep = exists ? null : depBranchOf(t, tasks);
+  const fromDep = dep ? await depRef(repo.top, dep) : null;
+  if (dep && !fromDep) log("dependency branch", dep, "not found in", repo.top, "; branching from the default branch");
+  const base = exists ? branch : fromDep ?? await baseRef(repo.top);
   const r = await git(repo.top, exists ? ["worktree", "add", wpath, branch] : ["worktree", "add", "--no-track", "-b", branch, wpath, base]);
   if (!r.ok) throw new Error(`Could not make a worktree for the task: ${r.err || "git worktree add failed"}`);
   return { path: wpath, branch, base, repo: repo.top, fresh: !exists };

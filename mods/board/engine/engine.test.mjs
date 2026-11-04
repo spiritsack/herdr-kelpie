@@ -350,3 +350,49 @@ test("PR links come from the description and the summaries, once each", () => {
   const t = { description: "See https://github.com/o/r/pull/12 and https://github.com/o/r/pull/12.", runs: [{ result: { summary: "Opened https://github.com/o/r/pull/30" } }, { result: null }] };
   assert.deepEqual(prLinksOf(t), [{ number: 12, url: "https://github.com/o/r/pull/12" }, { number: 30, url: "https://github.com/o/r/pull/30" }]);
 });
+
+import { depBranchOf, depRef } from "./engine.mjs";
+import { execFileSync } from "node:child_process";
+
+test("one dependency: branch from its branch; none or several: default branch", () => {
+  const a = { id: "t-aaaaa11111", board: "b1", title: "Foundation work", worktree: { branch: "board/foundation-11111" } };
+  const b = { id: "t-bbbbb22222", board: "b1", title: "No worktree yet!" };
+  const other = { id: "t-ccccc33333", board: "b2", title: "Elsewhere" };
+  const all = [a, b, other];
+  assert.equal(depBranchOf({ board: "b1", dependsOn: [a.id] }, all), "board/foundation-11111");
+  assert.equal(depBranchOf({ board: "b1", dependsOn: [b.id] }, all), "board/no-worktree-yet-22222");
+  assert.equal(depBranchOf({ board: "b1", dependsOn: [] }, all), null);
+  assert.equal(depBranchOf({ board: "b1" }, all), null);
+  assert.equal(depBranchOf({ board: "b1", dependsOn: [a.id, b.id] }, all), null);
+  assert.equal(depBranchOf({ board: "b1", dependsOn: [other.id] }, all), null);
+  assert.equal(depBranchOf({ board: "b1", dependsOn: ["gone"] }, all), null);
+});
+
+test("depRef prefers the pushed branch, the local one when ahead, null when missing", async () => {
+  const tmp = fsx.mkdtempSync(pathx.join(osx.tmpdir(), "deps-"));
+  const g = (cwd, ...a) => execFileSync("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", ...a], { stdio: "pipe" }).toString().trim();
+  try {
+    const origin = pathx.join(tmp, "origin.git"), repo = pathx.join(tmp, "repo");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
+    execFileSync("git", ["init", "-q", "-b", "main", repo]);
+    g(repo, "commit", "-q", "--allow-empty", "-m", "root");
+    g(repo, "remote", "add", "origin", origin);
+    g(repo, "push", "-q", "origin", "main");
+    assert.equal(await depRef(repo, "board/dep-1"), null);
+    g(repo, "branch", "board/dep-1");
+    assert.equal(await depRef(repo, "board/dep-1"), "board/dep-1");
+    g(repo, "push", "-q", "origin", "board/dep-1");
+    assert.equal(await depRef(repo, "board/dep-1"), "origin/board/dep-1");
+    g(repo, "checkout", "-q", "board/dep-1");
+    g(repo, "commit", "-q", "--allow-empty", "-m", "unpushed");
+    assert.equal(await depRef(repo, "board/dep-1"), "board/dep-1");
+    // pushed only (local branch gone), and pushed ahead of a stale local one
+    g(repo, "push", "-q", "origin", "board/dep-1");
+    g(repo, "checkout", "-q", "main");
+    g(repo, "branch", "-q", "-f", "board/dep-1", "main");
+    assert.equal(await depRef(repo, "board/dep-1"), "origin/board/dep-1");
+    g(repo, "branch", "-q", "-D", "board/dep-1");
+    g(repo, "update-ref", "-d", "refs/remotes/origin/board/dep-1");
+    assert.equal(await depRef(repo, "board/dep-1"), "origin/board/dep-1");
+  } finally { fsx.rmSync(tmp, { recursive: true, force: true }); }
+});

@@ -683,7 +683,9 @@ async function engineSource() {
     const readme = await fs.readFile(`${appHome()}/mods/${MOD}/engine/README.md`, "utf8").catch(() => "");
     const heavy = await fs.readFile(`${appHome()}/mods/${MOD}/engine/board-heavy.sh`, "utf8").catch(() => "");
     const skill = await fs.readFile(`${appHome()}/mods/${MOD}/engine/SKILL.md`, "utf8").catch(() => "");
-    bundled = { text, readme, heavy, skill, version: `${PROTOCOL}-${hash(text + readme + heavy + skill)}` };
+    // engine.mjs imports platform.mjs (its Linux layer), so it goes along everywhere.
+    const platform = await fs.readFile(`${appHome()}/mods/${MOD}/engine/platform.mjs`, "utf8");
+    bundled = { text, readme, heavy, skill, platform, version: `${PROTOCOL}-${hash(text + readme + heavy + skill + platform)}` };
   }
   return bundled;
 }
@@ -735,11 +737,12 @@ export async function ensureEngine(machine) {
 </dict></plist>
 `;
     // Linux takes at most 128 KiB in one argument (MAX_ARG_STRLEN), and engine.mjs
-    // is near that: it goes as pieces, the first as $2 and the rest after ${10}.
+    // is near that: it goes as pieces, the first as $2 and the rest after ${11}.
     const [first, ...more] = argPieces(src.text);
     // The engine's files, then its service: a running one is replaced (bootout, bootstrap).
     const w = await exec("sh", ["-c", `set -e; mkdir -p "$1/engine" "$1/bin" "$(dirname "$4")"
-pieces() { shift 10; printf "%s" "$@"; }
+pieces() { shift 11; printf "%s" "$@"; }
+printf "%s" "\${11}" > "$1/engine/.platform.mjs.tmp" && mv -f "$1/engine/.platform.mjs.tmp" "$1/engine/platform.mjs"
 { printf "%s" "$2"; pieces "$@"; } > "$1/engine/.engine.mjs.tmp" && mv -f "$1/engine/.engine.mjs.tmp" "$1/engine/engine.mjs"
 printf "%s" "$9" > "$1/bin/.board-heavy.tmp" && chmod 755 "$1/bin/.board-heavy.tmp" && mv -f "$1/bin/.board-heavy.tmp" "$1/bin/board-heavy"
 printf "%s" "$5" > "$4.tmp" && mv -f "$4.tmp" "$4"
@@ -760,7 +763,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do launchctl bootstrap "gui/$6" "$4" 2>/dev/null 
 launchctl bootstrap "gui/$6" "$4"`, "sh", home, first, src.version, plistPath, plist, uidNum, LABEL, src.readme, src.heavy,
       // The skill names this machine's board home (here: ~/.config/herdr-app/board).
       src.skill.replaceAll("~/.herdr/board", home.startsWith(`${userHome}/`) ? `~${home.slice(userHome.length)}` : home),
-      ...more], { on: machine });
+      src.platform, ...more], { on: machine });
     if (w.code !== 0) throw new Error(`Could not install the board engine on ${machine ?? "this Mac"}: ${(w.stderr || w.stdout).trim()}`);
     return have ? "updated" : "installed";
   } finally {

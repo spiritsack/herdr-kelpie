@@ -339,7 +339,7 @@ export class TaskView extends View {
       const [word, color] = p?.isDraft && p.state === "OPEN" ? ["Draft", tm.muted] : look[p?.state] ?? [p?.error ? "?" : "…", tm.dim];
       return h_flex().id(`pr-${i}`).items_center().gap(8).px(6).py(4).rounded(6).cursor_pointer()
         .hover((s) => s.bg(tm.hover))
-        .on_click(() => { exec("open", [url]).catch(() => {}); })
+        .on_click(() => { openFile(url).catch(() => {}); }) // xdg-open on Linux (state.js)
         .child(div().flex_none().text_size(12).font_medium().text_color(tm.accent).child(`#${num}`))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(tm.foreground).child(p?.title ?? url.replace("https://github.com/", "")))
         .child(div().flex_none().text_size(11).text_color(color).child(word));

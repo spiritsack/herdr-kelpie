@@ -1,5 +1,5 @@
 // The board screen's data: a client of the board engines. Each machine runs an
-// engine (engine/engine.mjs, a launchd service) that keeps that machine's
+// engine (engine/engine.mjs, a launchd/systemd service) that keeps that machine's
 // boards, team library and tasks, starts the agents and hands tasks on. This
 // mod reads each engine's state.json and sends every change to its inbox/ as a
 // request. It also installs and updates the engines (see engine.js here).
@@ -10,6 +10,7 @@
 
 import { shared, setShared, spaces as spacesNow, panes as panesNow, machines, exec, appHome, readTextFile, knownAgents, notify, run, focused, window, playSound } from "herdr";
 import * as fs from "fs/promises";
+import { osOf, serviceHint, UNIT, systemdUnit, LINUX_SERVICE, PICK_LINUX } from "./platform.js"; // Linux (LINUX.md)
 
 export const MOD = "board";
 export const PROTOCOL = 2;
@@ -228,7 +229,7 @@ async function send(machine, name, body, wait) {
       return ans;
     }
   }
-  throw new Error(`The board engine on ${machine ?? "this Mac"} did not answer. Is it running? (launchctl print gui/$UID/${LABEL})`);
+  throw new Error(`The board engine on ${machine ?? "this Mac"} did not answer. Is it running? (${serviceHint(machine, LABEL)})`);
 }
 
 // ---- task changes ----
@@ -565,7 +566,8 @@ export async function detach(taskId, name) {
 }
 
 export async function pickFiles() {
-  if (window().platform !== "macos") return null;
+  const linux = window().platform === "linux"; // Linux: zenity instead of osascript (platform.js)
+  if (window().platform !== "macos" && !linux) return null;
   const out = `${appHome()}/board/.pick-${uid("p")}`;
   const script = [
     'tell application "System Events" to activate',
@@ -576,13 +578,13 @@ export async function pickFiles() {
     "end repeat",
     "return out",
   ].flatMap((l) => ["-e", l]);
-  await exec("sh", ["-c", 'o="$1"; shift; (osascript "$@" >"$o" 2>"$o.err"; echo $? >"$o.done") </dev/null >/dev/null 2>&1 &', "sh", out, ...script]);
+  await exec("sh", linux ? ["-c", PICK_LINUX, "sh", out] : ["-c", 'o="$1"; shift; (osascript "$@" >"$o" 2>"$o.err"; echo $? >"$o.done") </dev/null >/dev/null 2>&1 &', "sh", out, ...script]);
   try {
     for (let i = 0; i < 3000 && !(await fs.exists(`${out}.done`)); i++) await exec("sleep", ["0.3"]);
     const code = parseInt((await readTextFile(`${out}.done`)) ?? "1", 10);
     const err = (await readTextFile(`${out}.err`)) ?? "";
     if (code !== 0) {
-      if (/cancel/i.test(err) || !err.trim()) return [];
+      if ((linux && code === 1) || /cancel/i.test(err) || !err.trim()) return [];
       throw new Error(err.trim());
     }
     return ((await readTextFile(out)) ?? "").split("\n").filter(Boolean);
@@ -700,7 +702,7 @@ export function argPieces(text) {
 
 const installing = {};
 // Puts the bundled engine on a machine when its version differs, and (re)starts
-// its launchd service. Returns what it did.
+// its service (launchd; a systemd user unit on Linux). Returns what it did.
 export async function ensureEngine(machine) {
   const k = keyOf(machine);
   if (installing[k]) return "busy";
@@ -723,10 +725,12 @@ export async function ensureEngine(machine) {
     const [node, hcPath, uidNum, userHome] = paths;
     if (!node || !node.startsWith("/")) throw new Error(`Node is not installed on ${machine ?? "this Mac"}: the board engine needs it.`);
     if (!hcPath?.startsWith("/")) throw new Error(`hc is not on the PATH on ${machine ?? "this Mac"}.`);
-    const plistPath = `${userHome}/Library/LaunchAgents/${LABEL}.plist`;
+    // Linux: a systemd user unit in place of the launchd plist (platform.js).
+    const linux = (await osOf(machine)) === "linux";
+    const plistPath = linux ? `${userHome}/.config/systemd/user/${UNIT}` : `${userHome}/Library/LaunchAgents/${LABEL}.plist`;
     const pathEnv = [...new Set([node, hcPath].map((p) => p.slice(0, p.lastIndexOf("/"))).concat(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]))].join(":");
     const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
-    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+    const plist = linux ? systemdUnit({ node, home, hcPath, machine: machine ?? "this machine", pathEnv }) : `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${LABEL}</string>
@@ -758,6 +762,7 @@ if [ -n "\${10}" ]; then
   if [ -d "$C" ] && [ ! -L "$C" ] && [ "$(ls -A "$C")" = "SKILL.md" ]; then rm -rf "$C"; fi
   [ -e "$C" ] && [ ! -L "$C" ] || ln -sfn "$S" "$C"
 fi
+${linux ? LINUX_SERVICE : ""}
 launchctl bootout "gui/$6/$7" 2>/dev/null || true
 for i in 1 2 3 4 5 6 7 8 9 10; do launchctl bootstrap "gui/$6" "$4" 2>/dev/null && exit 0; sleep 0.5; done
 launchctl bootstrap "gui/$6" "$4"`, "sh", home, first, src.version, plistPath, plist, uidNum, LABEL, src.readme, src.heavy,

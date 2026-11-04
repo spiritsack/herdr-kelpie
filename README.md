@@ -27,6 +27,8 @@ Kelpie is a software factory for coding agents in the [Herdr](https://herdr.dev)
 
 You need macOS, Node, git and a coding agent's command-line program on each Mac that runs agents.
 
+It runs on Linux too, with a systemd user instance and `secret-tool` for secrets: see [LINUX.md](LINUX.md).
+
 ## What it installs and does
 
 Read this before you install it:

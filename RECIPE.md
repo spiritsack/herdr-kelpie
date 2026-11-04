@@ -123,7 +123,7 @@ Kelpie is a software factory for coding agents in Herdr: a kanban board where te
 
 ## Watch out
 
-- **macOS only.** The engine needs launchd and the Keychain.
+- **macOS, or Linux with systemd.** The engine needs launchd and the Keychain on a Mac. On Linux it runs as a systemd user unit and keeps secrets through `secret-tool` (LINUX.md).
 - **Use hidden or underscore names for scratch files.** Every save in the mod folder reloads every copy of the mod. After many reloads or long uptime, Herdr's JS engine slows down (rquickjs JIT upkeep): renders take seconds, and Herdr stops them with "could not be re-rendered". Restarting Herdr fixes it.
 - **Start the first load from a timer.** An async load spawned straight from a dialog's `init` never finishes in Herdr 0.1.10, which is why the first load uses `cx.timer.after`. Calling `cx.notify()` during `init` also leaves a dialog blank.
 - **Keep large data out of shared state.** Every `shared()` read copies the whole value, and every write redraws every mod. The engine states (hundreds of KB) stay in each view's memory, and shared state carries only versions.

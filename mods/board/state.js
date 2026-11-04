@@ -687,6 +687,15 @@ async function engineSource() {
   }
   return bundled;
 }
+// A text in pieces of at most 30000 code points (under 128 KiB of UTF-8 each),
+// for arguments: Linux refuses a longer one with "Argument list too long".
+export function argPieces(text) {
+  const cps = Array.from(String(text));
+  const out = [];
+  for (let i = 0; i < cps.length; i += 30000) out.push(cps.slice(i, i + 30000).join(""));
+  return out.length ? out : [""];
+}
+
 const installing = {};
 // Puts the bundled engine on a machine when its version differs, and (re)starts
 // its launchd service. Returns what it did.
@@ -725,9 +734,13 @@ export async function ensureEngine(machine) {
 <key>StandardErrorPath</key><string>${esc(home)}/engine.err</string><key>StandardOutPath</key><string>/dev/null</string>
 </dict></plist>
 `;
+    // Linux takes at most 128 KiB in one argument (MAX_ARG_STRLEN), and engine.mjs
+    // is near that: it goes as pieces, the first as $2 and the rest after ${10}.
+    const [first, ...more] = argPieces(src.text);
     // The engine's files, then its service: a running one is replaced (bootout, bootstrap).
     const w = await exec("sh", ["-c", `set -e; mkdir -p "$1/engine" "$1/bin" "$(dirname "$4")"
-printf "%s" "$2" > "$1/engine/.engine.mjs.tmp" && mv -f "$1/engine/.engine.mjs.tmp" "$1/engine/engine.mjs"
+pieces() { shift 10; printf "%s" "$@"; }
+{ printf "%s" "$2"; pieces "$@"; } > "$1/engine/.engine.mjs.tmp" && mv -f "$1/engine/.engine.mjs.tmp" "$1/engine/engine.mjs"
 printf "%s" "$9" > "$1/bin/.board-heavy.tmp" && chmod 755 "$1/bin/.board-heavy.tmp" && mv -f "$1/bin/.board-heavy.tmp" "$1/bin/board-heavy"
 printf "%s" "$5" > "$4.tmp" && mv -f "$4.tmp" "$4"
 printf "%s" "$8" > "$1/.README.md.tmp" && mv -f "$1/.README.md.tmp" "$1/README.md"
@@ -744,9 +757,10 @@ if [ -n "\${10}" ]; then
 fi
 launchctl bootout "gui/$6/$7" 2>/dev/null || true
 for i in 1 2 3 4 5 6 7 8 9 10; do launchctl bootstrap "gui/$6" "$4" 2>/dev/null && exit 0; sleep 0.5; done
-launchctl bootstrap "gui/$6" "$4"`, "sh", home, src.text, src.version, plistPath, plist, uidNum, LABEL, src.readme, src.heavy,
+launchctl bootstrap "gui/$6" "$4"`, "sh", home, first, src.version, plistPath, plist, uidNum, LABEL, src.readme, src.heavy,
       // The skill names this machine's board home (here: ~/.config/herdr-app/board).
-      src.skill.replaceAll("~/.herdr/board", home.startsWith(`${userHome}/`) ? `~${home.slice(userHome.length)}` : home)], { on: machine });
+      src.skill.replaceAll("~/.herdr/board", home.startsWith(`${userHome}/`) ? `~${home.slice(userHome.length)}` : home),
+      ...more], { on: machine });
     if (w.code !== 0) throw new Error(`Could not install the board engine on ${machine ?? "this Mac"}: ${(w.stderr || w.stdout).trim()}`);
     return have ? "updated" : "installed";
   } finally {

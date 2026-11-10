@@ -2,8 +2,8 @@
 // showing who is on it and what their agent is doing right now.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Popover } from "gpui-base";
-import { theme, props, openOverlay, closeOverlay, run, focused, notify, exec } from "herdr";
-import { depsOpen, depsLine, DEP_DONE, unblockInTab, COLUMNS, MOD, tasks, tasksOf, team, member, column, activeRun, liveStatus, runLimit, updateTask, launch, boardSettings, setBoardSettings, setBoardTeam, boardOfSpace, teamsOf, stateOf, outdated, lead, poll, ensureEngine, served, request, programTable, uid, programs, knownNow, ago, spaces, busyOn } from "./state.js";
+import { theme, props, openOverlay, closeOverlay, run, focused, notify } from "herdr";
+import { depsOpen, depsLine, DEP_DONE, unblockInTab, COLUMNS, MOD, tasks, tasksOf, team, member, column, activeRun, liveStatus, runLimit, updateTask, launch, boardSettings, setBoardSettings, setBoardTeam, boardOfSpace, teamsOf, stateOf, outdated, lead, poll, ensureEngine, served, request, programTable, uid, programs, knownNow, ago, spaces, busyOn, openFile } from "./state.js";
 import { button, tiny, memberChip, programIcon, statusGlyph, STATUS_WORDS, colorOf, dot } from "./ui.js";
 import { noteOf, plain, clip } from "./note.js";
 import { limitLine } from "./limit.js";
@@ -179,7 +179,7 @@ export class Board extends View {
         .when(p.state === "CLOSED", (el) => el.line_through())
         .when(!ghost, (el) => el.cursor_pointer().hover((s) => s.underline())
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click((_e, cx) => { cx.stop_propagation(); if (p.url) exec("open", [p.url]); }))
+          .on_click((_e, cx) => { cx.stop_propagation(); if (p.url) openFile(p.url).catch(() => {}); }))
         .tooltip(`#${p.number} ${word(p)}`.trim())
         .child(`#${p.number}`)));
   }

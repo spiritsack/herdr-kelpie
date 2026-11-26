@@ -8,7 +8,7 @@
 // app, another machine's terminals and spaces are "<machine>/t7". qual() and
 // local() are the one place that maps between the two.
 
-import { shared, setShared, spaces as spacesNow, panes as panesNow, machines, exec, appHome, readTextFile, knownAgents, notify, run, focused, window, playSound } from "herdr";
+import { terminals as terminalsNow, agents as agentsNow, shared, setShared, spaces as spacesNow, panes as panesNow, machines, exec, appHome, readTextFile, knownAgents, notify, run, focused, window, playSound } from "herdr";
 import * as fs from "fs/promises";
 import { osOf, serviceHint, UNIT, systemdUnit, LINUX_SERVICE, PICK_LINUX } from "./platform.js"; // Linux (LINUX.md)
 
@@ -28,6 +28,21 @@ export function within(fn, stored = false, ctx = null) {
 const once = (key, read) => (pass ? (pass[key] ??= read()) : read());
 export const spaces = () => once("spaces", spacesNow);
 export const panes = () => once("panes", panesNow);
+
+// Card champions (~/.local/bin/card-talk): background Claude sessions labelled herdr.card=<task id>,
+// on this machine. { [task id]: { address, status } }; status as Herdr reports it ("done" = it
+// finished while the person wasn't looking: a reply waits).
+export const champions = () => once("champions", () => {
+  const status = new Map(agentsNow().map((a) => [a.address, a.status]));
+  const out = {};
+  for (const k of terminalsNow()) {
+    const id = k.labels?.["herdr.card"];
+    if (!id || k.state !== "live" || String(k.address).includes("/")) continue;
+    out[id] = { address: k.address, status: status.get(k.address) ?? k.status ?? "idle" };
+  }
+  return out;
+});
+export const championOf = (t) => (t && !t.machine ? champions()[t.id] ?? null : null);
 
 export const COLUMNS = [
   { id: "backlog", name: "Backlog" },

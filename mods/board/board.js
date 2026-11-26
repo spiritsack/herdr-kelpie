@@ -3,7 +3,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Popover } from "gpui-base";
 import { theme, props, openOverlay, closeOverlay, run, focused, notify } from "herdr";
-import { depsOpen, depsLine, DEP_DONE, unblockInTab, COLUMNS, MOD, tasks, tasksOf, team, member, column, activeRun, liveStatus, runLimit, updateTask, launch, boardSettings, setBoardSettings, setBoardTeam, boardOfSpace, teamsOf, stateOf, outdated, lead, poll, ensureEngine, served, request, programTable, uid, programs, knownNow, ago, spaces, busyOn, openFile } from "./state.js";
+import { championOf, depsOpen, depsLine, DEP_DONE, unblockInTab, COLUMNS, MOD, tasks, tasksOf, team, member, column, activeRun, liveStatus, runLimit, updateTask, launch, boardSettings, setBoardSettings, setBoardTeam, boardOfSpace, teamsOf, stateOf, outdated, lead, poll, ensureEngine, served, request, programTable, uid, programs, knownNow, ago, spaces, busyOn, openFile } from "./state.js";
 import { button, tiny, memberChip, programIcon, statusGlyph, STATUS_WORDS, colorOf, dot } from "./ui.js";
 import { noteOf, plain, clip } from "./note.js";
 import { limitLine } from "./limit.js";
@@ -116,6 +116,23 @@ export class Board extends View {
 
   // ---- drawing ----
 
+  // The card champion's line, apart from the members' status (it never moves the card or its
+  // status): thinking (spinner), needs you (blocked), else its reply waits, until the person
+  // prompts it again or closes the conversation. A click peeks at it.
+  championRow(t, champ, ghost) {
+    const tm = theme();
+    const glyph = champ.status === "working" || champ.status === "blocked" ? champ.status : "done";
+    const words = { working: "Champion is thinking", done: "Champion has a reply", blocked: "Champion needs you" };
+    return h_flex().id(`champ-${t.id}${ghost ? "-g" : ""}`).items_center().gap(6).text_size(11)
+      .text_color(champ.status === "blocked" ? tm.blocked : champ.status === "done" ? tm.foreground : tm.muted)
+      .when(!ghost, (el) => el.cursor_pointer().hover((s) => s.underline())
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { cx.stop_propagation(); this.peek(champ.address); }))
+      .child(statusGlyph(glyph, 10))
+      .child(div().child(words[glyph]));
+  }
+
+
   card(t, ghost = false) {
     const tm = theme();
     const m = member(t.assignee);
@@ -125,12 +142,15 @@ export class Board extends View {
     const err = this.errors[t.id];
     const prog = knownNow().find((p) => p.key === m?.program);
     const canStart = Boolean(m) && !run && t.column !== "done" && !depsOpen(t).length;
+    const champ = championOf(t);
     return v_flex().id(ghost ? `ghost-${t.id}` : `card-${t.id}`).w_full().p(10).gap(7).rounded(8).flex_none()
       .bg(tm.surface).border_1().border_color(t.attention ? tm.blocked : this.drag === t.id && !ghost ? tm.accent : tm.border)
       .when(this.drag === t.id && !ghost, (el) => el.opacity(0.35))
       .when(ghost, (el) => el.shadow_md().opacity(0.92))
       .when(!ghost, (el) => el.cursor_pointer().hover((s) => s.border_color(tm.accent))
         .on_mouse_down("left", (e) => { this.press = { id: t.id, x: e.position.x, y: e.position.y }; })
+        // Right-click: the card's menu (Talk to card champion, Open card), at the pointer.
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: MOD, kind: "popup", width: 240, height: 116, props: { view: "cardmenu", id: t.id } }); })
         .on_click(() => { if (!this.drag) this.openTask(t.id); }))
       .child(h_flex().items_start().gap(8)
         .child(div().flex_1().min_w(0).text_size(12.5).font_medium().text_color(tm.foreground).child(t.title || "Untitled"))
@@ -156,6 +176,7 @@ export class Board extends View {
           .child(div().text_size(11).text_color(tm.muted).child(clip(plain(n.body), 160))));
       })
       .when(Boolean(err), (el) => el.child(div().text_size(11).text_color(tm.blocked).child(err)))
+      .when(Boolean(champ), (el) => el.child(this.championRow(t, champ, ghost)))
       .child(h_flex().items_center().gap(6).text_size(10.5).text_color(tm.dim)
         .child(div().child(`${t.runs?.length ?? 0} run${(t.runs?.length ?? 0) === 1 ? "" : "s"}`))
         .when((t.attachments?.length ?? 0) > 0, (el) => el.child(div().child(`📎 ${t.attachments.length}`)))

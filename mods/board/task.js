@@ -2,8 +2,8 @@
 // history, runs and the actions the person takes on it.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState } from "gpui-base";
-import { theme, spaces, props, closeOverlay, openOverlay, run, exec } from "herdr";
-import { boardMates, depsOpen, DEP_DONE, depLoops, MOD, unblockInTab, COLUMNS, tasks, task, team, member, column, activeRun, liveStatus, runStatus, runLimit, updateTask, newTask, removeTask, removeTaskDir, where, launch, restart, endRun, tidy, goTo, paneOf, isLive, leftOver, nudge, reply, place, taskDir, knownNow, programs, ago, uid, attachments, copyIn, attach, detach, filesDir, pickFiles, openFile, removeWorktree, ctxOfTask, boardOfSpace, fileOf, homeNow } from "./state.js";
+import { theme, spaces, props, closeOverlay, openOverlay, run, exec, home, hc } from "herdr";
+import { championOf, boardMates, depsOpen, DEP_DONE, depLoops, MOD, unblockInTab, COLUMNS, tasks, task, team, member, column, activeRun, liveStatus, runStatus, runLimit, updateTask, newTask, removeTask, removeTaskDir, where, launch, restart, endRun, tidy, goTo, paneOf, isLive, leftOver, nudge, reply, place, taskDir, knownNow, programs, ago, uid, attachments, copyIn, attach, detach, filesDir, pickFiles, openFile, removeWorktree, ctxOfTask, boardOfSpace, fileOf, homeNow } from "./state.js";
 import { button, tiny, label, field, fileChip, memberChip, programIcon, statusGlyph, STATUS_WORDS, section, chips, titleRow, closeButton, colorOf, dot } from "./ui.js";
 import { MarkdownEditor } from "./mdeditor.js";
 import { TextBlocks } from "./textblock.js";
@@ -36,6 +36,23 @@ async function loadPrs(urls) {
     changed = true;
   }
   return changed;
+}
+
+// Ends the card's champion conversation: its terminal goes; the next Talk resumes the same
+// session (the champion keeps its memory of earlier talks).
+export async function closeChampion(t) {
+  const c = championOf(t);
+  if (!c) return;
+  const r = await hc(["kill", c.address]);
+  // It runs with --rm: once ended it is removed at once, so "not_found" means it is closed.
+  const out = `${r.stderr ?? ""}${r.stdout ?? ""}`;
+  if (r.code !== 0 && !/not_found|was removed/.test(out)) throw new Error(out.trim() || "hc kill failed");
+}
+
+export async function talkToCard(t) {
+  if (t.machine) throw new Error("Talk to card works for this machine's board only.");
+  const r = await exec("sh", ["-c", 'PATH="$HOME/.local/bin:$PATH" exec card-talk "$1"', "sh", t.id], { cwd: home() });
+  if (r.code !== 0) throw new Error((r.stderr || r.stdout || "card-talk failed").trim().replace(/^card-talk: /, ""));
 }
 
 export class TaskView extends View {
@@ -359,6 +376,8 @@ export class TaskView extends View {
     const canStart = Boolean(m) && !active && !depsOpen(t).length;
     const needsYou = Boolean(t.attention) || status === "blocked";
     const actions = h_flex().flex_wrap().gap(6).items_center()
+      .when(!t.machine, (el) => el.child(button("talk", "Talk to card ↗", (_e, cx) => this.run(cx, async () => { await talkToCard(task(t.id)); }), { primary: !needsYou && !canStart, disabled: this.busy })))
+      .when(Boolean(championOf(t)), (el) => el.child(button("close-champion", "Close champion", (_e, cx) => this.run(cx, () => closeChampion(task(t.id))), { disabled: this.busy })))
       .when(needsYou, (el) => el.child(button("unblock", "Unblock in tab ↗", (_e, cx) => this.run(cx, async () => { await unblockInTab(task(t.id)); this.close(); }), { primary: true, disabled: this.busy })))
       .when(canStart, (el) => el.child(button("start", `▶ Start ${m.name}`, (_e, cx) => this.run(cx, () => launch(task(t.id))), { primary: true, disabled: this.busy })))
       .when(Boolean(active), (el) => el

@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""card-talk <task id> [first message]
+
+Talk to a Kelpie (Herdr board) card's champion: one Claude Code session per
+card that you can come back to. It runs in a background terminal (no tab)
+and opens as a Peek over the window; closing the Peek leaves it running. Later
+calls peek at it again, or resume the same session once it has exited. Each call rewrites the
+card's brief (CARD.md) from the board's current state, so the champion sees
+what the members did since you last talked.
+
+The champion does not write code. After it asks you, it acts through the
+board's inbox (notes, description updates, replies to a waiting agent,
+starting a member) with "from": "card champion", so its decisions land in the
+card's history, where the orchestrator reads them.
+
+Its files live in ~/.local/share/card-champions/<task id>/ (CARD.md,
+session.json), outside the engine's folders and outside the shipped board mod,
+so Herdr updates leave them alone. This machine's board only.
+"""
+import json, os, subprocess, sys, time, uuid
+from datetime import datetime
+
+BOARD = os.path.expanduser(os.environ.get("BOARD_HOME", "~/.config/herdr-app/board"))
+ROOT = os.path.expanduser("~/.local/share/card-champions")
+FROM = "card champion"
+
+
+def die(msg):
+    print(f"card-talk: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def when(ms):
+    return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M") if ms else "?"
+
+
+def herdr(*args):
+    r = subprocess.run(["herdr-app", *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"herdr-app {args[0]} failed: {(r.stderr or r.stdout).strip()}")
+    return r.stdout
+
+
+def hc(*args):
+    r = subprocess.run(["hc", *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"hc {args[0]} failed: {(r.stderr or r.stdout).strip()}")
+    return r.stdout
+
+
+def peek(address):
+    for _ in range(20):
+        r = subprocess.run(["herdr-app", "do", "terminal.peek", json.dumps({"terminal": address})], capture_output=True, text=True)
+        if r.returncode == 0 and "no running terminal" not in r.stdout + r.stderr:
+            return
+        time.sleep(0.25)
+    die(f"the window did not show terminal {address}: {(r.stderr or r.stdout).strip()}")
+
+
+def brief(s, t, champ_dir):
+    board = next((b for b in s.get("boards", []) if b["id"] == t.get("board")), {})
+    team = next((x for x in s.get("teams", []) if x["id"] == board.get("team")), {"members": []})
+    members = team.get("members", [])
+    name_of = lambda mid: next((m["name"] for m in members if m["id"] == mid), mid or "nobody")
+    home = s.get("home") or BOARD
+    tdir = t.get("dir")
+    runs = t.get("runs") or []
+    active = next((r for r in reversed(runs) if not r.get("ended") and not r.get("result")), None)
+    last = runs[-1] if runs else None
+    wt = t.get("worktree") or {}
+
+    L = [f"# Card: {t['title']}", ""]
+    L += ["You are this card's champion. Refreshed " + datetime.now().strftime("%Y-%m-%d %H:%M") +
+          " from the board; if we talked before, say in one or two lines what changed since then.", ""]
+    L += ["## The card", ""]
+    L.append(f"- Id: {t['id']}, column: {t['column']}, assignee: {name_of(t.get('assignee'))}")
+    L.append(f"- Repository: {board.get('folder') or t.get('folder')}")
+    if wt.get("path"):
+        L.append(f"- Its worktree: {wt['path']} (branch {wt.get('branch')})")
+    for pr in t.get("prs") or []:
+        L.append(f"- PR #{pr['number']} ({pr.get('state')}{', draft' if pr.get('draft') else ''}): {pr['url']}")
+    if t.get("jira"):
+        L.append(f"- Jira: {t['jira']}")
+    if t.get("attention"):
+        L.append(f"- Board note for the person: {t['attention']}")
+    if active and active.get("blocked") and not active.get("blockAnswered"):
+        L += ["", f"{name_of(active['member'])} is waiting in its terminal with this question:", "",
+              "> " + str(active["blocked"]).replace("\n", "\n> ")]
+    L += ["", (t.get("description") or "(no description)").strip(), ""]
+    L += ["## The team", ""]
+    for m in members:
+        L.append(f"- {m['name']}, {m.get('role', '')}")
+    L += ["", "## Runs", ""]
+    for r in runs:
+        res = r.get("result")
+        state = (f"{res['action']}" + (f" → {name_of(res.get('to'))}" if res.get("to") else "")) if res else \
+            (f"ended ({r.get('exit')})" if r.get("ended") else "running")
+        L.append(f"- {when(r.get('started'))} {name_of(r.get('member'))} in terminal {r.get('terminal')}: {state}"
+                 + (" [asked the person]" if r.get("blocked") else ""))
+        if res and res.get("summary"):
+            L.append("  " + res["summary"].replace("\n", " "))
+    if not runs:
+        L.append("- Nobody has worked on it yet.")
+    L += ["", "## History (oldest first)", ""]
+    for h in t.get("history") or []:
+        L.append(f"- {when(h.get('at'))} {str(h.get('text', '')).replace(chr(10), ' ')}")
+    L += ["", "## Read these too", ""]
+    if tdir and os.path.isdir(tdir):
+        notes = sorted(f for f in os.listdir(tdir) if os.path.isfile(os.path.join(tdir, f)) and not f.startswith("."))
+        L += [f"- {tdir}/{f}" for f in notes] or ["- (task folder is empty)"]
+        if os.path.isdir(os.path.join(tdir, "files")):
+            L.append(f"- Attached files: {tdir}/files/")
+    else:
+        L.append("- (no task folder: no member has run on this card yet)")
+    if last and last.get("terminal"):
+        live = active is not None
+        L.append(f"- {'The running' if live else 'The last'} agent's screen: `hc read {last['terminal']} --lines 300`")
+    L += ["", "## Acting on the board (only after the person agrees)", ""]
+    L.append(f"Write one JSON request per action into {home}/inbox/: a dot-named temp file, then rename it to "
+             f"`<unique>.json`. The answer appears in inbox/done/ or inbox/failed/ within seconds. "
+             f"Always include `\"from\": \"{FROM}\"`. Full guide: {home}/README.md.")
+    L.append("")
+    if active:
+        L.append(f'- Answer the waiting agent: `{{"op": "reply", "id": "{t["id"]}", "text": "…", "from": "{FROM}"}}`')
+    L.append(f'- Leave input or a decision for the next member: `{{"op": "note", "id": "{t["id"]}", "text": "…", "from": "{FROM}"}}`')
+    L.append(f'- Change the description: `{{"op": "update", "id": "{t["id"]}", "patch": {{"description": "<markdown>"}}, "from": "{FROM}"}}`')
+    L.append(f'- Let a member go on: `{{"op": "start", "id": "{t["id"]}", "member": "<name>", "from": "{FROM}"}}`'
+             ' (needs Autopilot on and the board open in a Herdr space)')
+    L.append(f'- Move the card (backlog, todo, doing, review, done; doing starts the assignee): `{{"op": "move", "id": "{t["id"]}", "column": "…", "from": "{FROM}"}}`')
+    L.append(f'- Reassign it: `{{"op": "assign", "id": "{t["id"]}", "assignee": "<name>", "from": "{FROM}"}}`')
+    return "\n".join(L) + "\n"
+
+
+ROLE = """You are the champion of one card on the Kelpie board (the Herdr kanban board). The person
+comes to you when they want to talk about this card directly instead of through their
+orchestrator: designer feedback, a change of scope, a question a member asked. Your card's
+brief comes in the person's first message, rebuilt from the board each time they open you;
+the newest one is what holds.
+
+- You do not write code, edit the project, commit or push. The board's members do that.
+  Reading the repo, the PR (`gh`), the task folder and agents' screens is fine.
+- You own this card's progress. Turn what the person tells you into board actions: a note for
+  the next member that is concrete enough to act on without this conversation, a description
+  update, a reply to a waiting agent, starting or reassigning a member, or moving the card
+  (back to To do or In progress for more work, to Review, or to Done when the work is
+  finished). Propose these yourself when the card's state calls for it.
+- Show the exact request first and send it only after the person agrees. Always send with
+  "from": "card champion".
+- Only this card. If something belongs on another card or needs new cards, say so and leave
+  that to the person's orchestrator.
+- Be short: the person came here because it is less noisy than the orchestrator.
+"""
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print(__doc__.strip())
+        sys.exit(0)
+    tid, extra = sys.argv[1], " ".join(sys.argv[2:]).strip()
+    s = json.load(open(os.path.join(BOARD, "state.json")))
+    t = next((x for x in s.get("tasks", []) if x["id"] == tid), None)
+    if not t:
+        die(f"no card {tid} on this machine's board ({BOARD}/state.json)")
+    board = next((b for b in s.get("boards", []) if b["id"] == t.get("board")), {})
+    repo = board.get("folder") or t.get("folder")
+    if not repo or not os.path.isdir(repo):
+        die(f"the card's repository {repo!r} is not a folder here")
+
+    champ = os.path.join(ROOT, tid)
+    os.makedirs(champ, exist_ok=True)
+    tmp = os.path.join(champ, ".CARD.md.tmp")
+    open(tmp, "w").write(brief(s, t, champ))
+    os.replace(tmp, os.path.join(champ, "CARD.md"))
+    open(os.path.join(champ, "ROLE.md"), "w").write(ROLE)
+
+    # The champion runs in a background terminal (no tab) named after the card, and
+    # opens as a Peek over the window; closing the Peek leaves it running.
+    tname = f"card-{tid}"[:32]
+    live = json.loads(hc("ls", "--json")).get("terminals", [])
+    k = next((x for x in live if x.get("name") == tname and x.get("state") == "live"), None)
+    if k:
+        if extra:
+            subprocess.run(["hc", "send", k["address"], extra], check=False)
+        peek(k["address"])
+        print(k["address"])
+        return
+
+    sess_file = os.path.join(champ, "session.json")
+    sess = json.load(open(sess_file)) if os.path.exists(sess_file) else None
+    if sess and sess.get("cwd") != repo:
+        sess = None  # claude resumes only from the folder it started in
+    # No --add-dir: Claude asks to trust each added folder in every new session, so the brief
+    # goes in the first message and the champion reads the listed notes with plain reads.
+    argv = ["claude", "--name", ("Card: " + t["title"])[:60], "--append-system-prompt-file", os.path.join(champ, "ROLE.md")]
+    card = open(os.path.join(champ, "CARD.md")).read()
+    if sess:
+        first = f"I opened you again from the board. Here is the card's brief, refreshed now; tell me in a line or two what changed since we last talked.\n\n{card}"
+        argv += ["--resume", sess["id"]]
+    else:
+        sid = str(uuid.uuid4())
+        first = f"Here is this card's brief. Read the files it lists, then sum up the card in a few lines (where it stands, what waits on whom) and ask what I want to talk about.\n\n{card}"
+        argv += ["--session-id", sid]
+        json.dump({"id": sid, "cwd": repo, "started": int(time.time() * 1000)}, open(sess_file, "w"))
+    if extra:
+        first += f"\n\n{extra}"
+    argv += ["--", first]
+    out = json.loads(hc("run", "--bg", "--json", "--no-parent", "--rm", "--name", tname, "--cwd", repo,
+                        "--label", f"herdr.card={tid}", "--", *argv))
+    peek(out["address"])
+    print(out["address"])
+
+
+if __name__ == "__main__":
+    main()
